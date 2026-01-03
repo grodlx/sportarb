@@ -4,87 +4,63 @@ import aiohttp
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
-CLOB_API = "https://clob.polymarket.com/markets"
+# Use Gamma API for initial discovery to filter by 'closed' status
+GAMMA_API = "https://gamma-api.polymarket.com/events"
 
-async def smart_discovery():
-    console.print("\n[bold cyan]🔍 Global Market Discovery Initiated[/bold cyan]")
-    all_discovered = []
-    next_cursor = ""
+async def live_discovery():
+    console.print("\n[bold cyan]📡 Scanning for LIVE Tradeable Markets...[/bold cyan]")
+    live_assets = {}
+    
+    # PARAMETERS: active=true and closed=false are MANDATORY to avoid 2023 data
+    params = {
+        "active": "true",
+        "closed": "false",
+        "limit": 100
+    }
     
     async with aiohttp.ClientSession() as session:
-        # Step 1: Broad Scan
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            task = progress.add_task("[yellow]Querying Polymarket Order Book...", total=None)
+        async with session.get(GAMMA_API, params=params) as resp:
+            if resp.status != 200:
+                console.print(f"[red]Error: {resp.status}[/red]")
+                return
+
+            events = await resp.json()
             
-            while True:
-                url = f"{CLOB_API}?next_cursor={next_cursor}" if next_cursor else CLOB_API
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        break
-                    data = await resp.json()
-                    markets = data.get('data', [])
+            for event in events:
+                # Each event (e.g. "Lakers vs Celtics") can have multiple markets
+                for market in event.get('markets', []):
+                    ticker = market.get('ticker')
+                    clob_raw = market.get('clobTokenIds')
                     
-                    for m in markets:
-                        tokens = m.get('tokens', [])
-                        if len(tokens) == 2:
-                            # Extracting stats
-                            vol = float(m.get('volume', 0))
-                            # Polymarket uses 'active' status in CLOB
-                            if m.get('active'):
-                                all_discovered.append({
-                                    "ticker": m.get('question', 'Unknown'),
-                                    "yes": tokens[0]['token_id'],
-                                    "no": tokens[1]['token_id'],
-                                    "volume": vol
-                                })
-                    
-                    progress.update(task, description=f"[yellow]Scanned {len(all_discovered)} binary markets...")
-                    next_cursor = data.get('next_cursor', "")
-                    if not next_cursor or next_cursor == "none" or len(all_discovered) > 2000:
-                        break
+                    if clob_raw and ticker:
+                        # Only grab binary Yes/No markets
+                        ids = json.loads(clob_raw) if isinstance(clob_raw, str) else clob_raw
+                        if len(ids) == 2:
+                            live_assets[ticker] = {
+                                "yes": ids[0],
+                                "no": ids[1],
+                                "volume": float(market.get('volume', 0))
+                            }
 
-    # Step 2: Adaptive Filtering
-    # We want markets with volume, but if there are none, we take the most recent ones.
-    console.print(f"[bold green]✅ Scan Complete. Processing {len(all_discovered)} candidates...[/bold green]")
+    # Display only the truly LIVE ones
+    table = Table(title="Currently Active Polymarket Bets")
+    table.add_column("Market Ticker", style="cyan")
+    table.add_column("24h Vol", justify="right")
     
-    # Sort by Volume descending
-    all_discovered.sort(key=lambda x: x['volume'], reverse=True)
-    
-    # Filter for the "Hot List"
-    # We take markets with volume > 100, OR just the top 100 markets if none have volume.
-    hot_list = [m for m in all_discovered if m['volume'] > 100]
-    
-    if len(hot_list) < 20:
-        console.print("[yellow]⚠️ Low volume markets detected. Falling back to Top 100 by activity.[/yellow]")
-        hot_list = all_discovered[:100]
-
-    # Step 3: Visual Confirmation Table
-    table = Table(title="Selected High-Priority Markets")
-    table.add_column("Market Question", style="magenta")
-    table.add_column("24h Volume", justify="right", style="green")
-    table.add_column("Status", justify="center")
-
-    final_assets = {}
-    for m in hot_list[:25]: # Show top 25 in terminal
-        table.add_row(m['ticker'][:50] + "...", f"${m['volume']:,.2f}", "[cyan]WATCHING[/cyan]")
-        final_assets[m['ticker']] = {"yes": m['yes'], "no": m['no']}
-
-    # Save the full hot_list (up to 500) to JSON
-    full_assets = {m['ticker']: {"yes": m['yes'], "no": m['no']} for m in hot_list}
+    for ticker, data in list(live_assets.items())[:20]:
+        table.add_row(ticker[:50], f"${data['volume']:,.2f}")
     
     console.print(table)
     
+    # Save for the bot
     with open("assets.json", "w") as f:
-        json.dump(full_assets, f, indent=4)
+        # Format for bot.py
+        bot_format = {k: {"yes": v["yes"], "no": v["no"]} for k, v in live_assets.items()}
+        json.dump(bot_format, f, indent=4)
         
-    console.print(f"\n[bold green]🚀 assets.json created with {len(full_assets)} priority markets![/bold green]")
+    console.print(f"\n[bold green]✅ Success! Cached {len(live_assets)} CURRENT markets.[/bold green]")
 
 if __name__ == "__main__":
-    asyncio.run(smart_discovery())
+    asyncio.run(live_discovery())
