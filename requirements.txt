@@ -1,14 +1,18 @@
-# Trading & API
+# --- Polymarket Official SDK ---
 py-clob-client>=0.34.1
-requests>=2.32.3
 
-# Performance & Async
-aiohttp>=3.10.1
-websockets>=13.0
-asyncio>=3.4.3
+# --- Networking & High Frequency ---
+# Used for fast, concurrent market discovery
+aiohttp>=3.11.0     
+# Essential for the <50ms real-time price feed
+websockets>=15.0.1  
 
-# UI & Visuals
-rich>=13.7.1
+# --- Dashboard & Visuals ---
+# Handles the rich tables and live terminal updates
+rich>=13.9.0        
 
-# Environment
-python-dotenv>=1.0.1
+# --- Utilities ---
+# For managing API keys safely
+python-dotenv>=1.0.1 
+# Standard requests for simple synchronous calls
+requests>=2.32.0
