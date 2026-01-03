@@ -1,0 +1,8 @@
+# Environments
+.env
+venv/
+__pycache__/
+
+# Distribution / Data
+*.log
+.DS_Store
