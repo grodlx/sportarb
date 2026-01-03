@@ -5,46 +5,63 @@ from rich.console import Console
 from rich.table import Table
 from rich.live import Live
 
-# Config
-WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-# Example Asset IDs (You'll need to fetch these via Gamma API for the sports section)
-ASSET_IDS = ["123456...", "789012..."] 
-
 console = Console()
-market_data = {}  # Stores live prices: {asset_id: {"yes": 0, "no": 0}}
 
-async def handle_market_updates():
-    async with websockets.connect(WS_URL) as ws:
-        # Subscribe to the market feed
-        subscribe_msg = {
-            "type": "market",
-            "assets_ids": ASSET_IDS
-        }
-        await ws.send(json.dumps(subscribe_msg))
+class HHFBot:
+    def __init__(self, asset_map):
+        self.asset_map = asset_map
+        # Reverse map for quick lookup: {asset_id: (ticker, type)}
+        self.id_to_market = {}
+        for ticker, ids in asset_map.items():
+            self.id_to_market[ids['yes']] = (ticker, "YES")
+            self.id_to_market[ids['no']] = (ticker, "NO")
+        
+        self.prices = {ticker: {"YES": 0.0, "NO": 0.0} for ticker in asset_map}
+        self.pnl = 0.0
 
-        while True:
-            message = await ws.recv()
-            data = json.loads(message)
-            
-            # Extract prices from orderbook update
-            # Polymarket WS sends 'book' or 'price_change' events
-            if data.get("type") == "book":
-                asset_id = data.get("asset_id")
-                # Simplified logic: grab the best ask/bid
-                # This is where your speed advantage happens
-                process_high_frequency_data(data)
+    async def listen(self):
+        uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        async with websockets.connect(uri) as ws:
+            # Subscribe to all sports assets
+            all_ids = list(self.id_to_market.keys())
+            subscribe_msg = {
+                "type": "subscribe",
+                "assets_ids": all_ids,
+                "channels": ["book"]
+            }
+            await ws.send(json.dumps(subscribe_msg))
 
-def process_high_frequency_data(data):
-    # Logic to instantly calculate YES + NO sum
-    # If < 1.00, trigger execution instantly
-    pass
+            while True:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                
+                if data.get("event_type") == "book":
+                    asset_id = data.get("asset_id")
+                    ticker, side = self.id_to_market[asset_id]
+                    
+                    # Get best ASK price (the price we buy at)
+                    if data.get("asks"):
+                        best_ask = float(data["asks"][0]["price"])
+                        self.prices[ticker][side] = best_ask
+                        self.check_arb(ticker)
+
+    def check_arb(self, ticker):
+        p_yes = self.prices[ticker]["YES"]
+        p_no = self.prices[ticker]["NO"]
+        
+        if p_yes > 0 and p_no > 0:
+            total = p_yes + p_no
+            if total < 0.998:  # 0.2% margin for safety
+                profit = (1.0 - total) * 100 # Using 100 multiplier
+                self.pnl += profit
+                console.print(f"[bold green]🔥 ARB DETECTED: {ticker} | Sum: {total:.3f} | +${profit:.2f}[/bold green]")
 
 async def main():
-    # Run the WebSocket listener and the UI simultaneously
-    await asyncio.gather(
-        handle_market_updates(),
-        # Add your dashboard update task here
-    )
+    with open("assets.json", "r") as f:
+        assets = json.load(f)
+    
+    bot = HHFBot(assets)
+    await bot.listen()
 
 if __name__ == "__main__":
     asyncio.run(main())
