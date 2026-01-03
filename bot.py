@@ -1,83 +1,67 @@
-import time
-import requests
+import asyncio
+import json
+import websockets
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
 
-# Settings
-MULTIPLIER = 100
-CATEGORY = "Sports"
-CHECK_INTERVAL = 5  # Faster refresh for the dashboard
-
 console = Console()
 
-class PaperTrader:
-    def __init__(self):
-        self.realized_pnl = 0.0
-        self.trades_count = 0
+class GlobalArbBot:
+    def __init__(self, asset_map):
+        self.asset_map = asset_map
+        self.prices = {ticker: {"YES": 0.0, "NO": 0.0} for ticker in asset_map}
+        self.id_to_market = {}
+        self.pnl = 0.0
 
-    def record_trade(self, price_sum):
-        profit = (1.00 - price_sum) * MULTIPLIER
-        self.realized_pnl += profit
-        self.trades_count += 1
-        return profit
+        for ticker, ids in asset_map.items():
+            self.id_to_market[ids['yes']] = (ticker, "YES")
+            self.id_to_market[ids['no']] = (ticker, "NO")
 
-trader = PaperTrader()
+    async def run(self):
+        uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        async with websockets.connect(uri) as ws:
+            subscribe_msg = {
+                "type": "subscribe",
+                "assets_ids": list(self.id_to_market.keys()),
+                "channels": ["book"]
+            }
+            await ws.send(json.dumps(subscribe_msg))
+            console.print(f"[bold cyan]🚀 MONITORING {len(self.asset_map)} MARKETS...[/bold cyan]")
 
-def get_sports_data():
-    url = "https://gamma-api.polymarket.com/markets?active=true&limit=50"
+            while True:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                updates = data if isinstance(data, list) else [data]
+                
+                for update in updates:
+                    if update.get("event_type") == "book":
+                        asset_id = update.get("asset_id")
+                        if asset_id in self.id_to_market:
+                            ticker, side = self.id_to_market[asset_id]
+                            if update.get("asks"):
+                                self.prices[ticker][side] = float(update["asks"][0]["price"])
+                                self.check_arb(ticker)
+
+    def check_arb(self, ticker):
+        p_yes = self.prices[ticker]["YES"]
+        p_no = self.prices[ticker]["NO"]
+        
+        if p_yes > 0 and p_no > 0:
+            total = p_yes + p_no
+            if 0.10 < total < 0.999: # Arb Threshold
+                profit = (1.0 - total) * 100 # Multiplier of 100
+                self.pnl += profit
+                console.print(f"[bold green]💰 ARB FOUND: {ticker[:30]}... | SUM: {total:.3f} | PnL: ${self.pnl:.2f}[/bold green]")
+
+async def start():
     try:
-        resp = requests.get(url).json()
-        # Filtering for Sports markets with exactly two outcomes (Yes/No)
-        return [m for m in resp if (m.get('group_tag') == CATEGORY or 'Sports' in str(m.get('tags'))) 
-                and len(m.get('outcomePrices', [])) == 2]
-    except:
-        return []
-
-def generate_table():
-    table = Table(title=f"Polymarket Sports Monitor (PnL: ${trader.realized_pnl:.2f})")
-    table.add_column("Ticker", style="cyan")
-    table.add_column("YES", justify="right")
-    table.add_column("NO", justify="right")
-    table.add_column("SUM", justify="right")
-    table.add_column("Status", justify="center")
-
-    markets = get_sports_data()
-    
-    for m in markets:
-        try:
-            p_yes = float(m['outcomePrices'][0])
-            p_no = float(m['outcomePrices'][1])
-            ticker = m.get('ticker', 'Unknown')[:20]
-            price_sum = p_yes + p_no
-            
-            # Identify Arb
-            if price_sum < 0.999: # Using 0.999 to account for float precision
-                status = "[bold green]ARB FOUND[/bold green]"
-                row_style = "on green"
-                trader.record_trade(price_sum)
-            else:
-                status = "[red]NO ARB[/red]"
-                row_style = ""
-
-            table.add_row(
-                ticker, 
-                f"{p_yes:.3f}", 
-                f"{p_no:.3f}", 
-                f"{price_sum:.3f}", 
-                status,
-                style=row_style
-            )
-        except:
-            continue
-            
-    return table
-
-def run():
-    with Live(generate_table(), refresh_per_second=1) as live:
-        while True:
-            time.sleep(CHECK_INTERVAL)
-            live.update(generate_table())
+        with open("assets.json", "r") as f:
+            assets = json.load(f)
+        bot = GlobalArbBot(assets)
+        await bot.run()
+    except FileNotFoundError:
+        console.print("[red]Error: Please run discovery.py first.[/red]")
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(start())
