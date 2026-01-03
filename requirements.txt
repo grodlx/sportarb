@@ -2,3 +2,6 @@ requests
 websockets
 rich
 python-dotenv
+asyncio
+json
+aiohttp
