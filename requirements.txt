@@ -1,14 +1,14 @@
-# --- Core Polymarket & Trading ---
+# Trading & API
 py-clob-client>=0.34.1
-python-dotenv>=1.0.1
+requests>=2.32.3
 
-# --- Performance & Network (High Frequency) ---
-aiohttp>=3.10.0
+# Performance & Async
+aiohttp>=3.10.1
 websockets>=13.0
 asyncio>=3.4.3
 
-# --- UI & Terminal Visualization ---
+# UI & Visuals
 rich>=13.7.1
 
-# --- Data Handling ---
-requests>=2.32.0
+# Environment
+python-dotenv>=1.0.1
