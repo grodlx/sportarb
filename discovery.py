@@ -1,45 +1,45 @@
-import asyncio
+import requests
 import json
-import aiohttp
 from pathlib import Path
 
-GAMMA_API = "https://gamma-api.polymarket.com"
-# Tag 100381 = General Sports, Tag 100639 = Specific Games
-TAG_IDS = ["100381", "100639"] 
-CACHE_FILE = "assets.json"
-CONCURRENT_REQUESTS = 5
+# Use the CLOB endpoint directly - this is where the trades happen
+CLOB_API = "https://clob.polymarket.com/markets"
 
-async def fetch_page(session, tag_id, offset):
-    params = {"tag_id": tag_id, "active": "true", "closed": "false", "limit": 100, "offset": offset}
-    async with session.get(f"{GAMMA_API}/events", params=params) as resp:
-        if resp.status == 200:
-            return await resp.json()
-        return []
-
-async def main():
-    active_assets = {}
-    async with aiohttp.ClientSession() as session:
-        for tag in TAG_IDS:
-            print(f"🔍 Scanning Tag: {tag}")
-            # Fetch first page to start
-            events = await fetch_page(session, tag, 0)
+def global_discovery():
+    print("🌐 Querying CLOB for all live tradeable markets...")
+    all_assets = {}
+    next_cursor = ""
+    
+    try:
+        # CLOB uses a cursor-based pagination
+        while True:
+            url = f"{CLOB_API}?next_cursor={next_cursor}" if next_cursor else CLOB_API
+            resp = requests.get(url).json()
             
-            # Parallel fetch for offsets 100, 200, 300...
-            tasks = [fetch_page(session, tag, i) for i in range(100, 1000, 100)]
-            results = await asyncio.gather(*tasks)
+            markets = resp.get('data', [])
+            for m in markets:
+                # We only want YES/NO binary pairs
+                tokens = m.get('tokens', [])
+                if len(tokens) == 2:
+                    # m['question'] is the title
+                    ticker = m.get('question', 'Unknown')
+                    all_assets[ticker] = {
+                        "yes": tokens[0]['token_id'],
+                        "no": tokens[1]['token_id']
+                    }
             
-            for page in [events] + list(results):
-                for event in page:
-                    for market in event.get("markets", []):
-                        ticker = market.get("ticker")
-                        clob_raw = market.get("clobTokenIds")
-                        if clob_raw and ticker:
-                            ids = json.loads(clob_raw) if isinstance(clob_raw, str) else clob_raw
-                            if len(ids) == 2:
-                                active_assets[ticker] = {"yes": ids[0], "no": ids[1]}
-
-    Path(CACHE_FILE).write_text(json.dumps(active_assets, indent=4))
-    print(f"✅ Cached {len(active_assets)} binary markets to {CACHE_FILE}")
+            next_cursor = resp.get('next_cursor', "")
+            if not next_cursor or next_cursor == "none":
+                break
+                
+        if all_assets:
+            Path("assets.json").write_text(json.dumps(all_assets, indent=4))
+            print(f"✅ Success! Found {len(all_assets)} live binary markets.")
+        else:
+            print("❌ No markets found. Verify your internet connection.")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    global_discovery()
